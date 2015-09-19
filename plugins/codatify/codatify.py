@@ -1,6 +1,6 @@
 # IDA plugin that converts all data in data segments to defined data types, and all data in code segments to code.
 #
-# Use by going to Options->Define data and code, or use the Alt+3 hotkey.
+# Use by going to Options->Define data and code.
 #
 # Craig Heffner
 # Tactical Network Solutions
@@ -16,7 +16,9 @@ class Codatify(object):
     SEARCH_DEPTH = 25
 
     def __init__(self):
-        pass
+        if self.get_start_ea(self.DATA) == idc.BADADDR:
+            if idc.AskYN(0, "There are no data segments defined! This probably won't end well. Continue?") != 1:
+                raise Exception("Action cancelled by user.")
 
     # Get the start of the specified segment type (2 == code, 3 == data)
     def get_start_ea(self, attr):
@@ -29,7 +31,7 @@ class Codatify(object):
                 break
             else:
                 seg = idc.NextSeg(seg)
-    
+
         return ea
 
     # Creates ASCII strings
@@ -54,19 +56,21 @@ class Codatify(object):
         ea = self.get_start_ea(self.DATA)
         if ea == idc.BADADDR:
             ea = idc.FirstSeg()
-        
+
         print "Converting remaining data to DWORDs...",
-    
+
         while ea != idc.BADADDR:
             flags = idc.GetFlags(ea)
-                    
-            if idc.isUnknown(flags) or idc.isByte(flags):
+
+            if (idc.isUnknown(flags) or idc.isByte(flags)) and ((ea % 4) == 0):
                 idc.MakeDword(ea)
                 idc.OpOff(ea, 0, 0)
 
             ea = idc.NextAddr(ea)
 
         print "done."
+
+        self._fix_data_offsets()
 
     def pointify(self):
         counter = 0
@@ -90,6 +94,23 @@ class Codatify(object):
 
         print "renamed %d pointers" % counter
 
+    def _fix_data_offsets(self):
+        ea = 0
+        count = 0
+
+        print "Fixing unresolved offset xrefs...",
+
+        while ea != idaapi.BADADDR:
+            (ea, n) = idaapi.find_notype(ea, idaapi.SEARCH_DOWN)
+            if idaapi.decode_insn(ea):
+                for i in range(0, len(idaapi.cmd.Operands)):
+                    op = idaapi.cmd.Operands[i]
+                    if op.type == idaapi.o_imm and idaapi.getseg(op.value):
+                        idaapi.add_dref(ea, op.value, (idaapi.dr_O | idaapi.XREF_USER))
+                        count += 1
+
+        print "created %d new data xrefs" % count
+
     # Creates functions and code blocks
     def codeify(self, ea=idc.BADADDR):
         func_count = 0
@@ -101,10 +122,6 @@ class Codatify(object):
                 ea = idc.FirstSeg()
 
         print "\nLooking for undefined code starting at: %s:0x%X" % (idc.SegName(ea), ea)
-
-        if self.get_start_ea(self.DATA) == idc.BADADDR:
-            print "WARNING: No data segments defined! I don't know where the code segment ends and the data segment begins."
-    
 
         while ea != idc.BADADDR:
             try:
@@ -119,9 +136,9 @@ class Codatify(object):
                             code_count += 1
             except:
                 pass
-            
+
             ea = idc.NextAddr(ea)
-    
+
         print "Created %d new functions and %d new code blocks\n" % (func_count, code_count)
 
 
@@ -134,8 +151,8 @@ class codatify_t(idaapi.plugin_t):
     wanted_hotkey = ""
 
     def init(self):
-        self.menu_context = idaapi.add_menu_item("Options/", "Fixup code", "Alt-3", 0, self.fix_code, (None,))
-        self.menu_context = idaapi.add_menu_item("Options/", "Fixup data", "Alt-4", 0, self.fix_data, (None,))
+        self.menu_context = idaapi.add_menu_item("Options/", "Fixup code", "", 0, self.fix_code, (None,))
+        self.menu_context = idaapi.add_menu_item("Options/", "Fixup data", "", 0, self.fix_data, (None,))
         return idaapi.PLUGIN_KEEP
 
     def term(self):
